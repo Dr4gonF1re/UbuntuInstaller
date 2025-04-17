@@ -175,6 +175,7 @@ dry_run=false
 apt_universe=false
 apt_multiverse=false
 cidata=
+default_filesystem=$filesystem
 
 # Processamento das opções de linha de comando
 while [ $# -gt 0 ]; do
@@ -368,13 +369,13 @@ d-i clock-setup/ntp-server string $ntp
 EOF
 
 [ "$disk_partitioning" = true ] && {
-    $save_preseed << 'EOF'
+    $save_preseed << EOF
 d-i partman-auto/method string regular
 EOF
     [ -n "$disk" ] && echo "d-i partman-auto/disk string $disk" | $save_preseed || echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' | $save_preseed
 }
 
-[ "$force_gpt" = true ] && $save_preseed << 'EOF'
+[ "$force_gpt" = true ] && $save_preseed << EOF
 d-i partman-partitioning/choose_label string gpt
 d-i partman-partitioning/default_label string gpt
 EOF
@@ -382,36 +383,43 @@ EOF
 [ "$disk_partitioning" = true ] && {
     echo "d-i partman/default_filesystem string $filesystem" | $save_preseed
     [ -z "$efi" ] && { efi=false; [ -d /sys/firmware/efi ] && efi=true; }
-    $save_preseed << 'EOF'
-d-i partman-auto/expert_recipe string \
-    naive :: \
-EOF
-    [ "$efi" = true ] && $save_preseed << EOF
-        $esp $esp $esp free \\
-EOF$save_preseed << 'EOF'
-            $iflabel{ gpt } \
-            $reusemethod{ } \
-            method{ efi } \
-            format{ } \
-        . \
-EOF || $save_preseed << 'EOF'
-        1 1 1 free \
-            $iflabel{ gpt } \
-            $reusemethod{ } \
-            method{ biosgrub } \
-        . \
-EOF
-    $save_preseed << 'EOF'
-        1075 1076 -1 $default_filesystem \
-            method{ format } \
-            format{ } \
-            use_filesystem{ } \
-            $default_filesystem{ } \
-            mountpoint{ / } \
+    
+    # Definir a parte condicional da receita
+    if [ "$efi" = true ]; then
+        conditional_recipe="
+            $esp $esp $esp free \\
+                \$iflabel{ gpt } \\
+                \$reusemethod{ } \\
+                method{ efi } \\
+                format{ } \\
+            . \\
+        "
+    else
+        conditional_recipe="
+            1 1 1 free \\
+                \$iflabel{ gpt } \\
+                \$reusemethod{ } \\
+                method{ biosgrub } \\
+            . \\
+        "
+    fi
+    
+    # Escrever a receita completa
+    $save_preseed << EOF
+d-i partman-auto/expert_recipe string \\
+    naive :: \\
+        $conditional_recipe \\
+        1075 1076 -1 \$default_filesystem \\
+            method{ format } \\
+            format{ } \\
+            use_filesystem{ } \\
+            \$default_filesystem{ } \\
+            mountpoint{ / } \\
         .
 EOF
+    
     [ "$efi" = true ] && echo 'd-i partman-efi/non_efi_system boolean true' | $save_preseed
-    $save_preseed << 'EOF'
+    $save_preseed << EOF
 d-i partman-auto/choose_recipe select naive
 d-i partman-basicfilesystems/no_swap boolean false
 d-i partman-partitioning/confirm_write_new_label boolean true
