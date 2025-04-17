@@ -385,24 +385,26 @@ EOF
     [ -z "$efi" ] && { efi=false; [ -d /sys/firmware/efi ] && efi=true; }
     
     # Definir a receita condicional
-    if [ "$efi" = true ]; then
-        conditional_recipe=$(printf "%s" \
-            "$esp $esp $esp free \\\\n" \
-            '    \$iflabel{ gpt } \\\\n' \
-            '    \$reusemethod{ } \\\\n' \
-            '    method{ efi } \\\\n' \
-            '    format{ } \\\\n' \
-            '  . \\\\n')
-    else
-        conditional_recipe=$(printf "%s" \
-            "1 1 1 free \\\\n" \
-            '    \$iflabel{ gpt } \\\\n' \
-            '    \$reusemethod{ } \\\\n' \
-            '    method{ biosgrub } \\\\n' \
-            '  . \\\\n')
-    fi
+    # Na seção de particionamento, substitua o bloco condicional por:
+if [ "$efi" = true ]; then
+    conditional_recipe=$(printf "%s" \
+        "$esp $esp $esp free \\\\n" \
+        '    \$iflabel{ gpt } \\\\n' \
+        '    \$reusemethod{ } \\\\n' \
+        '    method{ efi } \\\\n' \
+        '    format{ } \\\\n' \
+        '  . ')
+else
+    conditional_recipe=$(printf "%s" \
+        "1 1 1 free \\\\n" \
+        '    \$iflabel{ gpt } \\\\n' \
+        '    \$reusemethod{ } \\\\n' \
+        '    method{ biosgrub } \\\\n' \
+        '  . ')
+fi
 
-    $save_preseed << EOF
+# E modifique o HEREDOC para:
+$save_preseed << EOF
 d-i partman-auto/expert_recipe string \\
     naive :: \\
         $conditional_recipe
