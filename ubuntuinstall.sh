@@ -4,12 +4,12 @@ set -eu
 
 # Funções auxiliares
 err() {
-    printf "\nError: %s.\n" "$1" 1>&2
+    printf "\nErro: %s.\n" "$1" 1>&2
     exit 1
 }
 
 warn() {
-    printf "\nWarning: %s.\nContinuando com o padrão...\n" "$1" 1>&2
+    printf "\nAviso: %s.\nContinuando com o padrão...\n" "$1" 1>&2
     sleep 5
 }
 
@@ -153,7 +153,7 @@ sudo_with_password=false
 timezone=UTC-3
 ntp=ntp.ubuntu.com
 disk_partitioning=true
-disk="/dev/$(lsblk -no PKNAME "$(df /boot | grep -Eo '/dev/[a-z0-9]+')")"
+disk="/dev/sda"
 force_gpt=true
 efi=
 esp=106
@@ -175,7 +175,6 @@ dry_run=false
 apt_universe=false
 apt_multiverse=false
 cidata=
-default_filesystem=$filesystem
 
 # Processamento das opções de linha de comando
 while [ $# -gt 0 ]; do
@@ -202,7 +201,7 @@ while [ $# -gt 0 ]; do
         --timezone) timezone=$2; shift ;;
         --ntp) ntp=$2; shift ;;
         --no-part|--no-disk-partitioning) disk_partitioning=false ;;
-        --force-lowmem) [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && err 'Low memory level can only be 0, 1 or 2'; force_lowmem=$2; shift ;;
+        --force-lowmem) [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && err 'Nível de memória baixa só pode ser 0, 1 ou 2'; force_lowmem=$2; shift ;;
         --disk) disk=$2; shift ;;
         --no-force-gpt) force_gpt=false ;;
         --bios) efi=false ;;
@@ -223,7 +222,7 @@ while [ $# -gt 0 ]; do
         --no-force-efi-extra-removable) force_efi_extra_removable=false ;;
         --grub-timeout) grub_timeout=$2; shift ;;
         --dry-run) dry_run=true ;;
-        --cidata) cidata=$(realpath "$2"); [ ! -f "$cidata/meta-data" ] && err 'No "meta-data" file found'; [ ! -f "$cidata/user-data" ] && err 'No "user-data" file found'; shift ;;
+        --cidata) cidata=$(realpath "$2"); [ ! -f "$cidata/meta-data" ] && err 'Arquivo "meta-data" não encontrado'; [ ! -f "$cidata/user-data" ] && err 'Arquivo "user-data" não encontrado'; shift ;;
         --apt-universe) apt_universe=true ;;
         --apt-multiverse) apt_multiverse=true ;;
         *) err "Opção desconhecida: \"$1\"" ;;
@@ -238,7 +237,7 @@ done
             x86_64) architecture=amd64 ;;
             aarch64) architecture=arm64 ;;
             i386) architecture=i386 ;;
-            *) err 'No "--architecture" especificado' ;;
+            *) err 'Nenhuma "--architecture" especificada' ;;
         esac
     }
 }
@@ -369,13 +368,13 @@ d-i clock-setup/ntp-server string $ntp
 EOF
 
 [ "$disk_partitioning" = true ] && {
-    $save_preseed << EOF
+    $save_preseed << 'EOF'
 d-i partman-auto/method string regular
 EOF
     [ -n "$disk" ] && echo "d-i partman-auto/disk string $disk" | $save_preseed || echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' | $save_preseed
 }
 
-[ "$force_gpt" = true ] && $save_preseed << EOF
+[ "$force_gpt" = true ] && $save_preseed << 'EOF'
 d-i partman-partitioning/choose_label string gpt
 d-i partman-partitioning/default_label string gpt
 EOF
@@ -383,8 +382,6 @@ EOF
 [ "$disk_partitioning" = true ] && {
     echo "d-i partman/default_filesystem string $filesystem" | $save_preseed
     [ -z "$efi" ] && { efi=false; [ -d /sys/firmware/efi ] && efi=true; }
-    
-    # Definir a parte condicional da receita
     if [ "$efi" = true ]; then
         conditional_recipe="
             $esp $esp $esp free \\
@@ -403,23 +400,20 @@ EOF
             . \\
         "
     fi
-    
-    # Escrever a receita completa
     $save_preseed << EOF
 d-i partman-auto/expert_recipe string \\
     naive :: \\
         $conditional_recipe \\
-        1075 1076 -1 \$default_filesystem \\
+        1075 1076 -1 $filesystem \\
             method{ format } \\
             format{ } \\
             use_filesystem{ } \\
-            \$default_filesystem{ } \\
+            $filesystem{ } \\
             mountpoint{ / } \\
         .
 EOF
-    
     [ "$efi" = true ] && echo 'd-i partman-efi/non_efi_system boolean true' | $save_preseed
-    $save_preseed << EOF
+    $save_preseed << 'EOF'
 d-i partman-auto/choose_recipe select naive
 d-i partman-basicfilesystems/no_swap boolean false
 d-i partman-partitioning/confirm_write_new_label boolean true
