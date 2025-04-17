@@ -4,12 +4,12 @@ set -eu
 
 # Funções auxiliares
 err() {
-    printf "\nErro: %s.\n" "$1" 1>&2
+    printf "\nError: %s.\n" "$1" 1>&2
     exit 1
 }
 
 warn() {
-    printf "\nAviso: %s.\nContinuando com o padrão...\n" "$1" 1>&2
+    printf "\nWarning: %s.\nContinuando com o padrão...\n" "$1" 1>&2
     sleep 5
 }
 
@@ -36,7 +36,7 @@ in_target_backup() {
 configure_sshd() {
     [ -z "${sshd_config_backup+1s}" ] && in_target_backup /etc/ssh/sshd_config
     sshd_config_backup=
-    in_target sed -Ei "\"s/^#?$1 .+/$1 $2/"\" /etc/ssh/sshd_config
+    in_target sed -Ei "s/^#?$1 .+/$1 $2/" /etc/ssh/sshd_config
 }
 
 prompt_password() {
@@ -153,7 +153,7 @@ sudo_with_password=false
 timezone=UTC-3
 ntp=ntp.ubuntu.com
 disk_partitioning=true
-disk="/dev/sda"
+disk="/dev/$(lsblk -no PKNAME "$(df /boot | grep -Eo '/dev/[a-z0-9]+')")"
 force_gpt=true
 efi=
 esp=106
@@ -175,6 +175,7 @@ dry_run=false
 apt_universe=false
 apt_multiverse=false
 cidata=
+default_filesystem=$filesystem
 
 # Processamento das opções de linha de comando
 while [ $# -gt 0 ]; do
@@ -201,7 +202,7 @@ while [ $# -gt 0 ]; do
         --timezone) timezone=$2; shift ;;
         --ntp) ntp=$2; shift ;;
         --no-part|--no-disk-partitioning) disk_partitioning=false ;;
-        --force-lowmem) [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && err 'Nível de memória baixa só pode ser 0, 1 ou 2'; force_lowmem=$2; shift ;;
+        --force-lowmem) [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && err 'Low memory level can only be 0, 1 or 2'; force_lowmem=$2; shift ;;
         --disk) disk=$2; shift ;;
         --no-force-gpt) force_gpt=false ;;
         --bios) efi=false ;;
@@ -222,7 +223,7 @@ while [ $# -gt 0 ]; do
         --no-force-efi-extra-removable) force_efi_extra_removable=false ;;
         --grub-timeout) grub_timeout=$2; shift ;;
         --dry-run) dry_run=true ;;
-        --cidata) cidata=$(realpath "$2"); [ ! -f "$cidata/meta-data" ] && err 'Arquivo "meta-data" não encontrado'; [ ! -f "$cidata/user-data" ] && err 'Arquivo "user-data" não encontrado'; shift ;;
+        --cidata) cidata=$(realpath "$2"); [ ! -f "$cidata/meta-data" ] && err 'No "meta-data" file found'; [ ! -f "$cidata/user-data" ] && err 'No "user-data" file found'; shift ;;
         --apt-universe) apt_universe=true ;;
         --apt-multiverse) apt_multiverse=true ;;
         *) err "Opção desconhecida: \"$1\"" ;;
@@ -237,7 +238,7 @@ done
             x86_64) architecture=amd64 ;;
             aarch64) architecture=arm64 ;;
             i386) architecture=i386 ;;
-            *) err 'Nenhuma "--architecture" especificada' ;;
+            *) err 'No "--architecture" especificado' ;;
         esac
     }
 }
@@ -368,13 +369,13 @@ d-i clock-setup/ntp-server string $ntp
 EOF
 
 [ "$disk_partitioning" = true ] && {
-    $save_preseed << 'EOF'
+    $save_preseed << EOF
 d-i partman-auto/method string regular
 EOF
     [ -n "$disk" ] && echo "d-i partman-auto/disk string $disk" | $save_preseed || echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' | $save_preseed
 }
 
-[ "$force_gpt" = true ] && $save_preseed << 'EOF'
+[ "$force_gpt" = true ] && $save_preseed << EOF
 d-i partman-partitioning/choose_label string gpt
 d-i partman-partitioning/default_label string gpt
 EOF
@@ -382,38 +383,40 @@ EOF
 [ "$disk_partitioning" = true ] && {
     echo "d-i partman/default_filesystem string $filesystem" | $save_preseed
     [ -z "$efi" ] && { efi=false; [ -d /sys/firmware/efi ] && efi=true; }
+    
+    # Definir a receita condicional
     if [ "$efi" = true ]; then
-        conditional_recipe="
-            $esp $esp $esp free \\
-                \$iflabel{ gpt } \\
-                \$reusemethod{ } \\
-                method{ efi } \\
-                format{ } \\
-            . \\
-        "
+        conditional_recipe=$(printf "%s" \
+            "$esp $esp $esp free \\\\n" \
+            '    \$iflabel{ gpt } \\\\n' \
+            '    \$reusemethod{ } \\\\n' \
+            '    method{ efi } \\\\n' \
+            '    format{ } \\\\n' \
+            '  . \\\\n')
     else
-        conditional_recipe="
-            1 1 1 free \\
-                \$iflabel{ gpt } \\
-                \$reusemethod{ } \\
-                method{ biosgrub } \\
-            . \\
-        "
+        conditional_recipe=$(printf "%s" \
+            "1 1 1 free \\\\n" \
+            '    \$iflabel{ gpt } \\\\n' \
+            '    \$reusemethod{ } \\\\n' \
+            '    method{ biosgrub } \\\\n' \
+            '  . \\\\n')
     fi
+
     $save_preseed << EOF
 d-i partman-auto/expert_recipe string \\
     naive :: \\
-        $conditional_recipe \\
-        1075 1076 -1 $filesystem \\
+        $conditional_recipe
+        1075 1076 -1 \$default_filesystem \\
             method{ format } \\
             format{ } \\
             use_filesystem{ } \\
-            $filesystem{ } \\
+            \$default_filesystem{ } \\
             mountpoint{ / } \\
         .
 EOF
+    
     [ "$efi" = true ] && echo 'd-i partman-efi/non_efi_system boolean true' | $save_preseed
-    $save_preseed << 'EOF'
+    $save_preseed << EOF
 d-i partman-auto/choose_recipe select naive
 d-i partman-basicfilesystems/no_swap boolean false
 d-i partman-partitioning/confirm_write_new_label boolean true
@@ -470,60 +473,52 @@ echo "d-i preseed/late_command string $late_command" | $save_preseed
 
 [ "$power_off" = true ] && echo 'd-i debian-installer/exit/poweroff boolean true' | $save_preseed
 
-# Configuração do GRUB e download dos arquivos do instalador
+# Configuração do GRUB e download dos arquivos
 save_grub_cfg='cat'
 [ "$dry_run" = false ] && {
     case $suite in
         bionic) installer_url="http://archive.ubuntu.com/ubuntu/dists/bionic/main/installer-$architecture/current/images/netboot/ubuntu-installer/$architecture" ;;
-        focal) installer_url="http://archive.ubuntu.com/ubuntu/dists/focal/main/installer-$architecture/current/legacy-images/netboot/ubuntu-installer/$architecture" ;;
-        jammy) installer_url="http://archive.ubuntu.com/ubuntu/dists/jammy/main/installer-$architecture/current/legacy-images/netboot/ubuntu-installer/$architecture" ;;
-        noble) installer_url="http://archive.ubuntu.com/ubuntu/dists/noble/main/installer-$architecture/current/legacy-images/netboot/ubuntu-installer/$architecture" ;;
+        focal|jammy|noble) installer_url="http://archive.ubuntu.com/ubuntu/dists/$suite/main/installer-$architecture/current/legacy-images/netboot/ubuntu-installer/$architecture" ;;
     esac
 
-    download "$installer_url/linux" linux
-    download "$installer_url/initrd.gz" initrd.gz
+    download "$installer_url/linux" linux || err "Falha ao baixar o kernel"
+    download "$installer_url/initrd.gz" initrd.gz || err "Falha ao baixar o initrd"
 
-    gzip -d initrd.gz
-    echo preseed.cfg | cpio -o -H newc -A -F initrd
-    [ -n "$cidata" ] && { cp -r "$cidata" cidata; find cidata | cpio -o -H newc -A -F initrd; }
-    gzip -1 initrd
+    gzip -d initrd.gz || err "Falha ao descompactar initrd"
+    echo preseed.cfg | cpio -o -H newc -A -F initrd || err "Falha ao adicionar preseed ao initrd"
+    [ -n "$cidata" ] && {
+        cp -r "$cidata" cidata || err "Falha ao copiar dados cloud-init"
+        find cidata | cpio -o -H newc -A -F initrd || err "Falha ao adicionar cloud-init ao initrd"
+    }
+    gzip -1 initrd || err "Falha ao recompactar initrd"
 
-    mkdir -p /etc/default/grub.d
-    tee /etc/default/grub.d/zz-ubuntu.cfg 1>&2 << EOF
-GRUB_DEFAULT=ubuntu
-GRUB_TIMEOUT=$grub_timeout
-GRUB_TIMEOUT_STYLE=menu
-EOF
-
+    grub_cfg=
     if command_exists update-grub; then
         grub_cfg=/boot/grub/grub.cfg
         update-grub
     elif command_exists grub2-mkconfig; then
-        tmp=$(mktemp); grep -vF zz_ubuntu /etc/default/grub > "$tmp"; cat "$tmp" > /etc/default/grub; rm "$tmp"
-        echo 'zz_ubuntu=/etc/default/grub.d/zz-ubuntu.cfg; if [ -f "$zz_ubuntu" ]; then . "$zz_ubuntu"; fi' >> /etc/default/grub
-        grub_cfg=/boot/grub2/grub.cfg; [ -d /sys/firmware/efi ] && grub_cfg=/boot/efi/EFI/*/grub.cfg
+        grub_cfg=/boot/grub2/grub.cfg
+        [ -d /sys/firmware/efi ] && grub_cfg=/boot/efi/EFI/*/grub.cfg
         grub2-mkconfig -o "$grub_cfg"
     elif command_exists grub-mkconfig; then
-        tmp=$(mktemp); grep -vF zz_ubuntu /etc/default/grub > "$tmp"; cat "$tmp" > /etc/default/grub; rm "$tmp"
-        echo 'zz_ubuntu=/etc/default/grub.d/zz-ubuntu.cfg; if [ -f "$zz_ubuntu" ]; then . "$zz_ubuntu"; fi' >> /etc/default/grub
         grub_cfg=/boot/grub/grub.cfg
         grub-mkconfig -o "$grub_cfg"
     else
-        err 'Não encontrou "update-grub", "grub2-mkconfig" ou "grub-mkconfig"'
+        err 'Não encontrou nenhum comando GRUB válido'
     fi
     save_grub_cfg="tee -a $grub_cfg"
 }
 
 mkrelpath=$installer_directory
 [ "$dry_run" = true ] && mkrelpath=/boot
-installer_directory=$(grub-mkrelpath "$mkrelpath" 2> /dev/null || grub2-mkrelpath "$mkrelpath" 2> /dev/null) || err 'Não encontrou "grub-mkrelpath" ou "grub2-mkrelpath"'
+installer_directory=$(grub-mkrelpath "$mkrelpath" 2> /dev/null || grub2-mkrelpath "$mkrelpath" 2> /dev/null) || err 'Falha ao obter caminho GRUB'
 [ "$dry_run" = true ] && installer_directory="$installer_directory/ubuntu-$suite"
 
 kernel_params="$kernel_params lowmem/low=1"
 [ -n "$force_lowmem" ] && kernel_params="$kernel_params lowmem=+$force_lowmem"
 initrd="$installer_directory/initrd.gz"
 
-$save_grub_cfg 1>&2 << EOF
+$save_grub_cfg << EOF
 menuentry 'Ubuntu Installer' --id ubuntu {
     insmod part_msdos
     insmod part_gpt
@@ -535,14 +530,14 @@ menuentry 'Ubuntu Installer' --id ubuntu {
 }
 EOF
 
-# Mensagem final e reinicialização
+# Finalização
 clear
 echo -e "\033[1;31m═══════════════════════════════════════\033[0m"
-tput setaf 8 ; tput setab 4 ; tput bold ; printf '%25s%s%-14s\n' "FINALIZADO!" ; tput sgr0
+tput setaf 8 ; tput setab 4 ; tput bold ; printf '%25s%s%-14s\n' "INSTALAÇÃO CONCLUÍDA!" ; tput sgr0
 echo -e "\033[1;31m═══════════════════════════════════════\033[0m"
-echo -e "\033[33mO servidor será reiniciado.\033[0m"
-echo -e "\033[33mAguarde alguns minutos antes de reconectar ao SSH.\033[0m"
-echo -e "\033[33mAgradecemos sua paciência.\033[0m"
-echo -ne "\033[31mEnter para continuar ou CTRL+C para cancelar: \033[0m"; read -r enter
+echo -e "\033[33mO sistema será reiniciado automaticamente.\033[0m"
+echo -e "\033[33mA conexão SSH será estabelecida em breve.\033[0m"
+echo -ne "\033[31mPressione Enter para reiniciar...\033[0m"
+read -r
 
 [ "$(whoami)" != "root" ] && sudo reboot || reboot
