@@ -155,15 +155,15 @@ apt_backports=false
 cidata=""
 network_console=false
 
-# Mapeia versões do Ubuntu para codinomes
+# Mapeia versões do Ubuntu para codinomes e versões completas
 set_ubuntu_version() {
     case "$version" in
-        14.04) codename="trusty" ;;
-        16.04) codename="xenial" ;;
-        18.04) codename="bionic" ;;
-        20.04) codename="focal" ;;
-        22.04) codename="jammy" ;;
-        24.04) codename="noble" ;;
+        14.04) codename="trusty"; full_version="14.04.6" ;;
+        16.04) codename="xenial"; full_version="16.04.7" ;;
+        18.04) codename="bionic"; full_version="18.04.7" ;;
+        20.04) codename="focal"; full_version="20.04.6" ;;
+        22.04) codename="jammy"; full_version="22.04.5" ;;
+        24.04) codename="noble"; full_version="24.04.2" ;;
         *) err "Versão do Ubuntu não suportada: $version" ;;
     esac
 }
@@ -505,54 +505,58 @@ echo "d-i preseed/late_command string $late_command" | $save_preseed
 # Baixa os arquivos necessários
 # ------------------------------------------------------------------------------
 
-if [ "$architecture" = "amd64" ]; then
-    netboot_path="images/netboot"
-    [[ "$version" < "18.04" ]] && netboot_path="legacy-images/netboot"
-    base_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$codename/main/installer-$architecture/current/$netboot_path/ubuntu-installer/$architecture"
-    [ "$dry_run" = false ] && {
-        download "$base_url/linux" "vmlinuz"
-        download "$base_url/initrd.gz" "initrd.gz"
-    } || {
-        echo "[DRY-RUN] Baixando $base_url/linux para vmlinuz"
-        echo "[DRY-RUN] Baixando $base_url/initrd.gz para initrd.gz"
-    }
-elif [ "$architecture" = "arm64" ]; then
-    iso_url="$mirror_protocol://$mirror_host$mirror_directory/dists/$codename/main/installer-$architecture/current/images/netboot/mini.iso"
-    [ "$dry_run" = false ] && {
-        download "$iso_url" "ubuntu.iso"
-        mkdir -p mnt
-        mount -o loop ubuntu.iso mnt || err "Falha ao montar o ISO"
-        cp mnt/vmlinuz . || err "Falha ao copiar vmlinuz"
-        cp mnt/initrd.gz . || err "Falha ao copiar initrd.gz"
-        umount mnt || warn "Falha ao desmontar o ISO"
-        rm -rf mnt ubuntu.iso
-    } || echo "[DRY-RUN] Baixando e extraindo $iso_url"
+# Define o URL para o arquivo tar.gz de netboot
+netboot_url="https://releases.ubuntu.com/$full_version/ubuntu-$full_version-netboot-$architecture.tar.gz"
+
+if [ "$dry_run" = false ]; then
+    # Baixa o arquivo tar.gz
+    download "$netboot_url" "netboot.tar.gz"
+    
+    # Extrai o tar.gz
+    tar -xzf netboot.tar.gz || err "Falha ao extrair netboot.tar.gz"
+    
+    # Verifica se os arquivos necessários estão presentes
+    [ -f "linux" ] && mv linux vmlinuz || err "Arquivo linux não encontrado em netboot.tar.gz"
+    [ -f "initrd.gz" ] || err "Arquivo initrd.gz não encontrado em netboot.tar.gz"
+else
+    echo "[DRY-RUN] Baixando $netboot_url para netboot.tar.gz"
+    echo "[DRY-RUN] Extraindo netboot.tar.gz"
+    echo "[DRY-RUN] Renomeando linux para vmlinuz"
 fi
 
 # Prepara o initrd
 # ------------------------------------------------------------------------------
 
 if [ "$dry_run" = false ]; then
-    gzip -d initrd.gz
+    # Cria o preseed.cpio.gz
     mkdir -p preseed
     mv preseed.cfg preseed/
     (cd preseed && find . | cpio -o -H newc | gzip > ../preseed.cpio.gz) || err "Falha ao criar preseed.cpio.gz"
     rm -rf preseed
-    initrd_components=("preseed.cpio.gz")
-    [ "$firmware" = true ] && {
+    
+    # Lista de componentes do initrd
+    initrd_components=("initrd.gz" "preseed.cpio.gz")
+    
+    # Adiciona firmware se especificado
+    if [ "$firmware" = true ]; then
         firmware_url="https://cdimage.ubuntu.com/ubuntu/releases/$version/release/firmware.tar.gz"
         download "$firmware_url" "firmware.tar.gz"
         tar -xzf firmware.tar.gz -C . firmware.cpio.gz || err "Falha ao extrair firmware"
         initrd_components+=("firmware.cpio.gz")
-    }
-    [ -n "$cidata" ] && {
+    fi
+    
+    # Adiciona cidata se presente
+    if [ -n "$cidata" ]; then
         cp -r "$cidata" cidata
         (cd cidata && find . | cpio -o -H newc | gzip > ../cidata.cpio.gz) || err "Falha ao criar cidata.cpio.gz"
         initrd_components+=("cidata.cpio.gz")
-    }
-    cat "${initrd_components[@]}" initrd > initrd.gz || err "Falha ao concatenar initrd"
+    fi
+    
+    # Concatena os componentes no initrd final
+    cat "${initrd_components[@]}" > initrd.gz.final || err "Falha ao concatenar os componentes do initrd"
+    mv initrd.gz.final initrd.gz
 else
-    echo "[DRY-RUN] Preparando initrd com preseed, firmware e cidata"
+    echo "[DRY-RUN] Preparando initrd com preseed, firmware (se aplicável) e cidata (se presente)"
 fi
 
 # Configura o GRUB
