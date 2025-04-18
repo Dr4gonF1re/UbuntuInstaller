@@ -542,4 +542,8 @@ echo -e "\033[33mA conexão SSH será estabelecida em breve.\033[0m"
 echo -ne "\033[31mPressione Enter para reiniciar...\033[0m"
 read -r
 
-[ "$(whoami)" != "root" ] && sudo reboot || reboot
+if [ "$(whoami)" != "root" ]; then 
+    sudo reboot
+else
+    reboot
+fi
